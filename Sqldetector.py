@@ -27,7 +27,11 @@ def load_targets(file_path):
     try:
         with open(file_path, 'r') as f:
             data = json.load(f)
-        return data.get("targets", [])
+        targets = data.get("targets", [])
+        if not targets:
+            print("No targets found in the file.")
+            sys.exit(1)
+        return targets
     except (json.JSONDecodeError, FileNotFoundError) as e:
         print(f"Error loading targets file: {e}")
         sys.exit(1)
@@ -53,11 +57,17 @@ def check_sql_injection(url, method="GET", params=None, data=None):
     results = []
     session = requests.Session()
 
-    if method.upper() == "GET" and params:
+    # Ensure params or data are provided based on method
+    if method.upper() == "GET":
+        if not params:
+            params = {}
         original_params = params.copy()
-    elif method.upper() == "POST" and data:
+    elif method.upper() == "POST":
+        if not data:
+            data = {}
         original_data = data.copy()
     else:
+        print(f"Invalid method: {method}. Skipping.")
         return results
 
     for payload in SQL_PAYLOADS:
@@ -67,7 +77,9 @@ def check_sql_injection(url, method="GET", params=None, data=None):
             for param in original_params.keys():
                 test_params = original_params.copy()
                 test_params[param] = payload
-                test_url = f"{url.split('?')[0]}?{urlencode(test_params)}"
+                # Handle URLs with or without existing query strings
+                base_url = url.split('?')[0]
+                test_url = f"{base_url}?{urlencode(test_params)}"
                 try:
                     start_time = time.time()
                     response = session.get(test_url, timeout=10)
@@ -80,7 +92,7 @@ def check_sql_injection(url, method="GET", params=None, data=None):
                         }
                         results.append(result)
                         print(f" - Vulnerable GET param: {param} | URL: {test_url}")
-                    elif "SLEEP" in payload and detect_time_delay(start_time, end_time):
+                    elif "SLEEP" in payload.upper() and detect_time_delay(start_time, end_time):
                         result = {
                             "method": "GET", "param": param, "payload": payload,
                             "url": test_url, "evidence": f"Time delay detected ({end_time - start_time:.2f}s)"
@@ -88,7 +100,7 @@ def check_sql_injection(url, method="GET", params=None, data=None):
                         results.append(result)
                         print(f" - Blind SQL vuln (GET): {param} | URL: {test_url}")
                 except requests.RequestException as e:
-                    print(f" - Error with GET request: {e}")
+                    print(f" - Error with GET request to {test_url}: {e}")
 
         elif method.upper() == "POST":
             for param in original_data.keys():
@@ -106,7 +118,7 @@ def check_sql_injection(url, method="GET", params=None, data=None):
                         }
                         results.append(result)
                         print(f" - Vulnerable POST param: {param} | Data: {test_data}")
-                    elif "SLEEP" in payload and detect_time_delay(start_time, end_time):
+                    elif "SLEEP" in payload.upper() and detect_time_delay(start_time, end_time):
                         result = {
                             "method": "POST", "param": param, "payload": payload,
                             "data": test_data, "evidence": f"Time delay detected ({end_time - start_time:.2f}s)"
@@ -114,15 +126,18 @@ def check_sql_injection(url, method="GET", params=None, data=None):
                         results.append(result)
                         print(f" - Blind SQL vuln (POST): {param} | Data: {test_data}")
                 except requests.RequestException as e:
-                    print(f" - Error with POST request: {e}")
+                    print(f" - Error with POST request to {url}: {e}")
 
     return results
 
 def save_results(results, log_file):
     """Save results to a log file."""
-    with open(log_file, 'a') as f:
-        for result in results:
-            f.write(json.dumps(result) + "\n")
+    try:
+        with open(log_file, 'a') as f:
+            for result in results:
+                f.write(json.dumps(result) + "\n")
+    except IOError as e:
+        print(f"Error writing to log file: {e}")
 
 def main():
     print("=== Automated SQL Injection Detection Tool ===")
@@ -131,9 +146,6 @@ def main():
     # Load targets from file
     targets_file = input("Enter path to targets JSON file (e.g., targets.json): ").strip() or "targets.json"
     targets = load_targets(targets_file)
-    if not targets:
-        print("No targets found in the file.")
-        sys.exit(1)
 
     # Log file setup
     log_file = f"sql_injection_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -148,6 +160,11 @@ def main():
         if not validate_url(url):
             print(f"Skipping invalid URL: {url}")
             continue
+        
+        # Parse query string if present in URL for GET requests
+        if method == "GET" and '?' in url:
+            query = urlparse(url).query
+            params.update(parse_qs(query))
         
         print(f"\nScanning: {url} | Method: {method} | Params: {params}")
         results = check_sql_injection(
