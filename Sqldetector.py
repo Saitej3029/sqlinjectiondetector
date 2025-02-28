@@ -3,8 +3,8 @@ import requests
 import re
 import sys
 import time
-from urllib.parse import urlparse, parse_qs, urlencode
-import json
+from urllib.parse import urlparse, urlencode
+import argparse
 from datetime import datetime
 
 # SQL error patterns and payloads
@@ -21,20 +21,6 @@ SQL_PAYLOADS = [
 
 # Threshold for time-based blind SQL injection (seconds)
 TIME_THRESHOLD = 3
-
-def load_targets(file_path):
-    """Load target URLs and parameters from a JSON file."""
-    try:
-        with open(file_path, 'r') as f:
-            data = json.load(f)
-        targets = data.get("targets", [])
-        if not targets:
-            print("No targets found in the file.")
-            sys.exit(1)
-        return targets
-    except (json.JSONDecodeError, FileNotFoundError) as e:
-        print(f"Error loading targets file: {e}")
-        sys.exit(1)
 
 def validate_url(url):
     """Validate URL format."""
@@ -57,7 +43,6 @@ def check_sql_injection(url, method="GET", params=None, data=None):
     results = []
     session = requests.Session()
 
-    # Ensure params or data are provided based on method
     if method.upper() == "GET":
         if not params:
             params = {}
@@ -77,7 +62,6 @@ def check_sql_injection(url, method="GET", params=None, data=None):
             for param in original_params.keys():
                 test_params = original_params.copy()
                 test_params[param] = payload
-                # Handle URLs with or without existing query strings
                 base_url = url.split('?')[0]
                 test_url = f"{base_url}?{urlencode(test_params)}"
                 try:
@@ -135,52 +119,58 @@ def save_results(results, log_file):
     try:
         with open(log_file, 'a') as f:
             for result in results:
-                f.write(json.dumps(result) + "\n")
+                f.write(f"{result}\n")  # Simplified to plain text for readability
     except IOError as e:
         print(f"Error writing to log file: {e}")
 
 def main():
-    print("=== Automated SQL Injection Detection Tool ===")
+    print("=== SQL Injection Detection Tool ===")
     print("WARNING: Only test systems you have permission to scan.")
 
-    # Load targets from file
-    targets_file = input("Enter path to targets JSON file (e.g., targets.json): ").strip() or "targets.json"
-    targets = load_targets(targets_file)
+    # Argument parser for command-line input
+    parser = argparse.ArgumentParser(description="SQL Injection Detection Tool")
+    parser.add_argument("url", help="Target URL (e.g., http://example.com/login.php)")
+    parser.add_argument("method", choices=["GET", "POST"], help="HTTP method to test")
+    parser.add_argument("-p", "--params", nargs="+", help="Parameters as key=value pairs (e.g., user=test password=pass)", required=True)
+    
+    args = parser.parse_args()
+
+    # Validate URL
+    if not validate_url(args.url):
+        print(f"Invalid URL: {args.url}. Use http:// or https:// protocol.")
+        sys.exit(1)
+
+    # Parse parameters into a dictionary
+    params = {}
+    try:
+        for param in args.params:
+            key, value = param.split("=", 1)
+            params[key] = value
+    except ValueError:
+        print("Invalid parameter format. Use key=value pairs (e.g., user=test).")
+        sys.exit(1)
 
     # Log file setup
     log_file = f"sql_injection_scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     print(f"Results will be logged to: {log_file}")
 
-    all_results = []
-    for target in targets:
-        url = target.get("url")
-        method = target.get("method", "GET").upper()
-        params = target.get("params", {})
-        
-        if not validate_url(url):
-            print(f"Skipping invalid URL: {url}")
-            continue
-        
-        # Parse query string if present in URL for GET requests
-        if method == "GET" and '?' in url:
-            query = urlparse(url).query
-            params.update(parse_qs(query))
-        
-        print(f"\nScanning: {url} | Method: {method} | Params: {params}")
-        results = check_sql_injection(
-            url,
-            method,
-            params if method == "GET" else None,
-            params if method == "POST" else None
-        )
-        all_results.extend(results)
-        save_results(results, log_file)
+    # Run the scan
+    print(f"\nScanning: {args.url} | Method: {args.method} | Params: {params}")
+    results = check_sql_injection(
+        args.url,
+        args.method,
+        params if args.method == "GET" else None,
+        params if args.method == "POST" else None
+    )
 
-    # Summary
+    # Save results
+    save_results(results, log_file)
+
+    # Display summary
     print("\n=== Scan Summary ===")
-    if all_results:
-        print(f"Found {len(all_results)} potential vulnerabilities:")
-        for result in all_results:
+    if results:
+        print(f"Found {len(results)} potential vulnerabilities:")
+        for result in results:
             print(f"- Method: {result['method']}")
             print(f"  Parameter: {result['param']}")
             print(f"  Payload: {result['payload']}")
